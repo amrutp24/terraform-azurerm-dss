@@ -74,7 +74,7 @@ variable "subnet_cidr" {
 }
 
 variable "assign_public_ip" {
-  description = "Give the VM a public address. False needs a route of your own -- VPN or ExpressRoute."
+  description = "Give the VM a public address. False needs a route of your own: VPN or ExpressRoute."
   type        = bool
   default     = true
 }

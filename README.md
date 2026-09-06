@@ -3,16 +3,27 @@
 Runs [Dataiku DSS](https://www.dataiku.com/) on an Azure Linux virtual machine.
 
 The module creates a resource group, virtual network, network security group and
-a VM, and installs DSS through cloud-init: download, install, apply a licence,
+a VM, then installs DSS through cloud-init: download, install, apply a licence,
 register the boot service, and optionally mint the API key needed to configure
 the instance afterwards.
 
+| Requirement | Version |
+| --- | --- |
+| Terraform | >= 1.5 |
+| `hashicorp/azurerm` | ~> 4.0 |
+
+## Usage
+
 ```hcl
+provider "azurerm" {
+  features {}
+}
+
 module "dss" {
   source  = "amrutp24/dss/azurerm"
   version = "~> 0.1"
 
-  allowed_cidr_blocks = ["203.0.113.0/24"]
+  allowed_cidr_blocks = ["203.0.113.0/24"] # replace: your office or VPN range
   ssh_public_key      = file("~/.ssh/id_ed25519.pub")
   license_json        = var.dss_license_json
 }
@@ -22,31 +33,59 @@ output "dss_url" {
 }
 ```
 
-DSS answers on `module.dss.dss_url` once it has finished installing. Allow
-several minutes on first boot — the installer downloads about two gigabytes and
-then builds a Python environment. Until that finishes the port simply does not
-answer. Watch progress in boot diagnostics.
+`203.0.113.0/24` above is RFC 5737 documentation space and matches nothing real.
+Put your own range there.
 
-Everything lives in one resource group the module creates, so `terraform
-destroy` leaves nothing behind.
+`ssh_public_key` has no default and is required, because password authentication
+on the VM is disabled outright. Everything the module creates goes in one
+resource group it owns, so `terraform destroy` leaves nothing behind.
 
-## Configuring the instance is a second apply
+## While it installs
 
-This module gets you a running DSS. Creating projects, groups, connections and
-code environments inside it is done with the
+`terraform apply` returns in about a minute. DSS does not answer for several
+more: the installer pulls down roughly two gigabytes and then builds a Python
+environment. Until that finishes the port refuses connections outright, so a
+browser shows a connection error rather than a DSS page.
+
+cloud-init writes its progress to a log on the VM:
+
+```bash
+ssh azureuser@$(terraform output -raw public_ip) 'sudo tail -f /var/log/cloud-init-output.log'
+```
+
+Every line the bootstrap writes is prefixed `[dss-bootstrap]`, and the last one
+is `done`. The same output shows up in boot diagnostics in the portal, which is
+the way in when SSH is closed.
+
+If it never reaches `done`, that log names the step that failed. DSS keeps its
+own logs under `run/` inside the data directory once the installer has got that
+far.
+
+## Configuring DSS is a second apply
+
+This module gets you a running VM. Everything inside it (projects, groups,
+connections, code environments) belongs to the
 [`dataiku` provider](https://registry.terraform.io/providers/amrutp24/dataiku/latest),
-and it has to be a **separate root configuration**.
+which needs a **separate root configuration** of its own.
 
-Terraform resolves provider configuration during *planning*, before any resource
-exists. A configuration that creates this VM and then points the `dataiku`
-provider at it would need the VM's address and an API key before creating
-anything. It deadlocks. No module structure avoids that.
+Provider configuration is resolved at plan time, ahead of any resource being
+created. Put the VM and the `dataiku` provider in one configuration and planning
+would require the VM's address, plus an API key minted on a host that does not
+exist yet. Nothing about how the modules are nested changes that.
 
-So: apply this, wait for DSS to answer, then apply a second configuration that
-reads this one's outputs.
+So apply this, wait for DSS to answer, then apply a second configuration reading
+these outputs:
 
-That split is worth having anyway. You can rebuild the VM without touching its
-configuration, and change configuration without risking the VM.
+```hcl
+provider "dataiku" {
+  host = data.terraform_remote_state.vm.outputs.dss_url
+  # api_key from DATAIKU_API_KEY
+}
+```
+
+Two layers is the better shape regardless: the VM can be rebuilt without
+disturbing its configuration, and the configuration changed without risking the
+VM.
 
 ## Getting the API key out
 
@@ -54,15 +93,23 @@ The `dataiku` provider needs an API key, and a brand-new DSS has no way to
 produce one without a browser. With `create_api_key` left on, the bootstrap runs
 `dsscli api-key-create` and writes the result to `api_key_path`, mode 0600.
 
-Moving it off the VM is the part this module deliberately leaves to you.
-
-Key Vault is the cleanest of these: give the VM a managed identity with
-`Key Vault Secrets Officer`, push the key from cloud-init, and read it back with
+Moving it off the VM is the part this module deliberately leaves to you. Key
+Vault is the cleanest option: give the VM a managed identity with `Key Vault
+Secrets Officer`, push the key from cloud-init, and read it back with
 `azurerm_key_vault_secret`, so nothing sensitive passes through Terraform state.
 Fetching the file over SSH with an `external` data source works too.
 
-Or skip it entirely. Set `create_api_key = false` and create a global API key
-under Administration → Security once DSS is up.
+Or skip it. Set `create_api_key = false` and create a global API key under
+Administration → Security once DSS is up.
+
+## Outputs
+
+| Output | Use |
+| --- | --- |
+| `dss_url` | The `dataiku` provider's `host`. |
+| `public_ip`, `private_ip` | VM addresses. |
+| `vm_id` | Snapshots, extensions, anything referencing the VM. |
+| `data_dir` | Path holding every project. This is what to back up. |
 
 ## Limits
 
@@ -82,15 +129,15 @@ stateful and does not cluster this way, so recovery means restoring the data
 directory from a backup you took yourself.
 
 It also costs money. DSS drops into a low-memory mode below roughly 16 GB and
-says so in its logs, which is why the default is `Standard_D4s_v5` on Premium
-SSD — that bills for as long as it exists. Destroy it when you are done.
+says so in its logs, so the default is `Standard_D4s_v5` on Premium SSD, which
+bills for as long as it exists. Destroy it when you are done.
 
 ## Licensing DSS
 
-The `dataiku` provider talks to the DSS public REST API, which the Free Edition
-does not licence on its own — though the Enterprise trial bundled with it does,
-while that trial lasts. Pass a licence at install time with `license_json`, or
-register the instance through its web interface on first visit.
+The `dataiku` provider talks to the DSS public REST API, and the Free Edition
+does not licence that on its own. The Enterprise trial bundled with it does, for
+as long as the trial lasts. Pass a licence at install time with `license_json`,
+or register the instance through its web interface on first visit.
 
 `license_json` reaches `custom_data` and Terraform state, so supply it from a
 secret store rather than a file in your repository.
@@ -102,8 +149,8 @@ data, and its login page should not become reachable from the whole internet
 because a variable had a convenient default. Edit the validation if you
 genuinely mean it.
 
-Password authentication is disabled outright — `ssh_public_key` is required, and
-a key is the only way in. No SSH rule is created at all unless you set
+Password authentication is disabled, so `ssh_public_key` is required and a key
+is the only way in. No SSH rule is created at all unless you set
 `ssh_cidr_blocks`.
 
 ## License

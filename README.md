@@ -93,6 +93,9 @@ The `dataiku` provider needs an API key, and a brand-new DSS has no way to
 produce one without a browser. With `create_api_key` left on, the bootstrap runs
 `dsscli api-key-create` and writes the result to `api_key_path`, mode 0600.
 
+It writes an array of one object, not a bare object, so anything reading it
+has to index in: `[{"id": ..., "key": ..., "label": "terraform"}]`.
+
 Moving it off the VM is the part this module deliberately leaves to you. Key
 Vault is the cleanest option: give the VM a managed identity with `Key Vault
 Secrets Officer`, push the key from cloud-init, and read it back with

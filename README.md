@@ -25,7 +25,15 @@ module "dss" {
 
   allowed_cidr_blocks = ["203.0.113.0/24"] # replace: your office or VPN range
   ssh_public_key      = file("~/.ssh/id_ed25519.pub")
-  license_json        = var.dss_license_json
+
+  # The VM reads the licence itself at boot, so it never reaches Terraform
+  # state or custom_data. Only its name does. See "Licensing DSS" below.
+  license_key_vault_secret_id = "https://example-vault.vault.azure.net/secrets/dss-license"
+  license_key_vault_id        = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/example-rg/providers/Microsoft.KeyVault/vaults/example-vault"
+
+  # A root shell on the host without a key pair, which is how you read the
+  # admin API key. Creates nothing.
+  enable_run_command = true
 }
 
 output "dss_url" {
@@ -34,7 +42,10 @@ output "dss_url" {
 ```
 
 `203.0.113.0/24` above is RFC 5737 documentation space and matches nothing real.
-Put your own range there.
+Put your own range there, and your own vault in place of the example ids: if
+the vault and the secret are in the same configuration, pass
+`azurerm_key_vault_secret.x.id` and `azurerm_key_vault.x.id` instead of
+writing them out.
 
 `ssh_public_key` has no default and is required, because password authentication
 on the VM is disabled outright. Everything the module creates goes in one
@@ -96,14 +107,32 @@ produce one without a browser. With `create_api_key` left on, the bootstrap runs
 It writes an array of one object, not a bare object, so anything reading it
 has to index in: `[{"id": ..., "key": ..., "label": "terraform"}]`.
 
-Moving it off the VM is the part this module deliberately leaves to you. Key
-Vault is the cleanest option: give the VM a managed identity with `Key Vault
-Secrets Officer`, push the key from cloud-init, and read it back with
-`azurerm_key_vault_secret`, so nothing sensitive passes through Terraform state.
-Fetching the file over SSH with an `external` data source works too.
+Reading it needs root on the host. Set `enable_run_command = true` and the
+`session_command` output hands you the command:
+
+```bash
+eval "$(terraform output -raw session_command)"
+```
+
+That is `az vm run-command invoke --command-id RunShellScript`, which runs the
+script as root and returns its stdout. It needs no key pair, no open port 22,
+and nothing installed on the VM: `walinuxagent` is in the image already. What
+it does need is `Microsoft.Compute/virtualMachines/runCommand/action` on the
+VM, which Owner, Contributor and Virtual Machine Contributor all carry. The
+module cannot grant that to you, because it has no idea who you are, so
+`enable_run_command` is an acknowledgement that you already have it rather
+than something that provisions access.
+
+It is not an interactive shell. Azure Bastion is, and it bills by the hour for
+as long as it exists, which is why this module does not create one.
+
+The other route is SSH: set `ssh_cidr_blocks`, keep the private half of
+`ssh_public_key`, and read the file yourself. `api_key_path` is non-null under
+either, and null when neither is set, which is the signal that the file exists
+on the host and nothing can reach it.
 
 Or skip it. Set `create_api_key = false` and create a global API key under
-Administration → Security once DSS is up.
+Administration > Security once DSS is up.
 
 ## Outputs
 
@@ -113,6 +142,9 @@ Administration → Security once DSS is up.
 | `public_ip`, `private_ip` | VM addresses. |
 | `vm_id` | Snapshots, extensions, anything referencing the VM. |
 | `data_dir` | Path holding every project. This is what to back up. |
+| `session_command` | Run Command invocation that reads the API key, or null when `enable_run_command` is off. |
+| `api_key_path` | Where the bootstrap left the admin key, or null when nothing can reach the host. |
+| `identity_principal_id` | The VM identity to grant, or null when no licence secret was named. |
 
 ## Limits
 
@@ -124,8 +156,12 @@ There is no load balancer, TLS or DNS. DSS answers directly on its port over
 plain HTTP, so put it behind an Application Gateway with a certificate before
 anyone types a password into it.
 
-No managed identity is attached, so add one if the VM needs to reach Key Vault
-or storage.
+The only managed identity this module attaches is the one that reads the
+licence secret, and the only thing it is granted is that one secret. If the VM
+needs to reach storage, a registry or anything else, grant
+`identity_principal_id` yourself, or attach an identity of your own: note that
+a second identity on the VM would make the licence fetch's token request
+ambiguous, since it names no client id.
 
 Nothing replaces a broken node either: no scale set, no health probe. DSS is
 stateful and does not cluster this way, so recovery means restoring the data
@@ -138,8 +174,14 @@ and DSS reports the environment as created anyway. Pass `PYTHON312` to
 `dataiku_code_env`.
 
 It also costs money. DSS drops into a low-memory mode below roughly 16 GB and
-says so in its logs, so the default is `Standard_D4s_v5` on Premium SSD, which
-bills for as long as it exists. Destroy it when you are done.
+says so in its logs, so the default is `Standard_D4ds_v6` on Premium SSD,
+which bills for as long as it exists. Destroy it when you are done.
+
+That default is deliberately not a DSv5 size. A fresh subscription is given
+zero quota for the DSv5 family, so `Standard_D4s_v5` failed on quota part way
+through a first apply while DSv3, DSv4 and the v6 families all had ten vCPUs
+available. Check your own with `az vm list-usage --location <region>` before
+changing it.
 
 ## Licensing DSS
 
@@ -161,11 +203,44 @@ curl -su "$DATAIKU_API_KEY:" "$(terraform output -raw dss_url)/public/api/admin/
 `200` means the provider will work. `401` is a bad key. A licence error names
 itself in the body, and then you need a licence with API access.
 
-Pass a licence at install time with `license_json` if you have one, or register
-the instance through its web interface on first visit.
+Pass a licence at install time if you have one, or register the instance
+through its web interface on first visit.
 
-`license_json` reaches `custom_data` and Terraform state, so supply it from a
-secret store rather than a file in your repository.
+There are two ways to pass one, and they are not equivalent:
+
+`license_key_vault_secret_id` names a Key Vault secret and the VM reads it
+**itself** at boot, so only the secret's id reaches Terraform state and
+`custom_data`. Prefer this.
+
+```hcl
+license_key_vault_secret_id = "https://example-vault.vault.azure.net/secrets/dss-license"
+license_key_vault_id        = "/subscriptions/.../resourceGroups/example-rg/providers/Microsoft.KeyVault/vaults/example-vault"
+```
+
+Setting the secret id creates a user-assigned managed identity for the VM.
+Setting the vault id as well scopes a `Key Vault Secrets User` assignment to
+that **one secret**, which is the narrowest grant Azure offers. Leave the vault
+id out and the module grants nothing; use the `identity_principal_id` output to
+grant access yourself, which is what you want if the vault still uses access
+policies or lives in another subscription.
+
+How the VM reads it, since it matters when it goes wrong: the identity's token
+comes from the instance metadata service and the secret from the Key Vault REST
+API, fetched with `python3` and the standard library. No `az` CLI, which this
+image does not carry and which would be a sizeable download at boot to make one
+HTTP request. If the fetch fails, DSS installs **unlicensed rather than half
+configured**, the boot log says `warning: the licence command failed`, and
+the reason is in `/tmp/dss-license-fetch.log`. A `403` there means the role
+assignment has not reached the vault yet; reboot and it tries again.
+
+`license_json` is the one-step alternative and still works and still wins if
+you set both. It is rendered into the cloud-config, so the licence ends up in
+Terraform state and in the VM's `custom_data`. Prefer the secret.
+
+The licence itself is portable: its `instanceId` travels inside the signed
+licence rather than being derived from the hardware, so one licence works on a
+VM that did not exist when it was issued. That is what makes storing it viable
+at all.
 
 ## Security defaults
 
@@ -174,9 +249,16 @@ data, and its login page should not become reachable from the whole internet
 because a variable had a convenient default. Edit the validation if you
 genuinely mean it.
 
-Password authentication is disabled, so `ssh_public_key` is required and a key
-is the only way in. No SSH rule is created at all unless you set
-`ssh_cidr_blocks`.
+Password authentication is disabled, so `ssh_public_key` is required. It is
+required in a stronger sense than most variables: with no credential at all the
+azurerm provider refuses to create the VM, and refuses during apply rather than
+during plan, so there is no keyless configuration of this module that gets as
+far as a running VM. If you do not intend to use SSH, pass a throwaway key and
+discard its private half.
+
+Having a key is not the same as exposing one. No SSH rule is created unless you
+set `ssh_cidr_blocks`, so by default port 22 is closed to everyone and
+`enable_run_command` is the way onto the host.
 
 ## License
 

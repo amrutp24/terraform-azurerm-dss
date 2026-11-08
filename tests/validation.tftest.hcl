@@ -36,3 +36,90 @@ run "rejects_opening_dss_to_the_internet" {
 
   expect_failures = [var.allowed_cidr_blocks]
 }
+
+# license_key_vault_secret_id is interpolated into a command that runs as root
+# on the VM, and the secret's name is parsed out of it to build an RBAC scope.
+# Both of those want a known shape, and both fail somewhere unhelpful if they
+# do not get one: a malformed id either produces a shell command that does
+# something else or an RBAC scope Azure rejects halfway through an apply.
+run "accepts_a_key_vault_secret_id" {
+  command = plan
+
+  variables {
+    license_key_vault_secret_id = "https://example-vault.vault.azure.net/secrets/dss-license"
+  }
+}
+
+run "accepts_a_versioned_key_vault_secret_id" {
+  command = plan
+
+  variables {
+    license_key_vault_secret_id = "https://example-vault.vault.azure.net/secrets/dss-license/0123456789abcdef0123456789abcdef"
+  }
+}
+
+run "rejects_a_secret_id_that_is_not_a_url" {
+  command = plan
+
+  variables {
+    license_key_vault_secret_id = "dss-license"
+  }
+
+  expect_failures = [var.license_key_vault_secret_id]
+}
+
+# A vault id is an ARM resource id, which is the other kind of name entirely.
+# Passed here it would send the fetch to a host that does not exist.
+run "rejects_a_resource_id_in_place_of_a_secret_id" {
+  command = plan
+
+  variables {
+    license_key_vault_secret_id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/example-rg/providers/Microsoft.KeyVault/vaults/example-vault/secrets/dss-license"
+  }
+
+  expect_failures = [var.license_key_vault_secret_id]
+}
+
+# Shell metacharacters in particular. This string reaches a root shell.
+run "rejects_a_secret_id_carrying_a_shell_metacharacter" {
+  command = plan
+
+  variables {
+    license_key_vault_secret_id = "https://example-vault.vault.azure.net/secrets/dss-license;id"
+  }
+
+  expect_failures = [var.license_key_vault_secret_id]
+}
+
+run "accepts_a_key_vault_resource_id" {
+  command = plan
+
+  variables {
+    license_key_vault_secret_id = "https://example-vault.vault.azure.net/secrets/dss-license"
+    license_key_vault_id        = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/example-rg/providers/Microsoft.KeyVault/vaults/example-vault"
+  }
+}
+
+# The secret id is appended to this to form the scope, so a vault id with a
+# path already on it would produce a scope naming two secrets.
+run "rejects_a_vault_id_with_a_trailing_path" {
+  command = plan
+
+  variables {
+    license_key_vault_secret_id = "https://example-vault.vault.azure.net/secrets/dss-license"
+    license_key_vault_id        = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/example-rg/providers/Microsoft.KeyVault/vaults/example-vault/secrets/dss-license"
+  }
+
+  expect_failures = [var.license_key_vault_id]
+}
+
+run "rejects_a_vault_uri_in_place_of_a_vault_id" {
+  command = plan
+
+  variables {
+    license_key_vault_secret_id = "https://example-vault.vault.azure.net/secrets/dss-license"
+    license_key_vault_id        = "https://example-vault.vault.azure.net/"
+  }
+
+  expect_failures = [var.license_key_vault_id]
+}

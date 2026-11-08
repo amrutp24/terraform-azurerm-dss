@@ -19,11 +19,28 @@ variable "location" {
 variable "vm_size" {
   description = <<-EOT
     VM size. DSS drops into a low-memory mode below roughly 16 GB and says so
-    in its logs, so Standard_D4s_v5 is about the smallest that behaves
+    in its logs, so four vCPUs and 16 GB is about the smallest that behaves
     normally.
+
+    The default was Standard_D4s_v5, and that is a poor default: a fresh
+    subscription is given zero quota for the DSv5 family while DSv3, DSv4 and
+    the v6 families all get ten vCPUs. So the first person to try this module
+    hit a quota error part way through an apply, after the network and the
+    vault grant were already built. Checked on two subscriptions in two
+    regions: Standard DSv5 Family vCPUs limit 0 in both.
+
+    Standard_D4ds_v6 has the same four vCPUs and 16 GB, is current generation
+    rather than 2017, and its family does have quota on a new subscription.
+    The d means it carries a local temp disk, which suits DSS writing scratch.
+
+    Two things to know if you change this. A v6 size is Generation 2 only,
+    which the Ubuntu 24.04 image this module boots satisfies. And
+    Standard_D4ds_v6 is restricted in some availability zones on some
+    subscriptions; this module pins no zone, so the VM is regional and that
+    does not apply, but it would if you added one.
   EOT
   type        = string
-  default     = "Standard_D4s_v5"
+  default     = "Standard_D4ds_v6"
 }
 
 variable "ssh_public_key" {

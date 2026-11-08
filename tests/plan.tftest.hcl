@@ -104,14 +104,21 @@ run "ssh_opens_only_to_the_given_ranges" {
 # failure to the next resource rather than fixing it, so the association is
 # left to review rather than bent into a test.
 
-# Dataiku asks for at least 16 GB.
+# Dataiku asks for at least 16 GB, and the default also has to be a size a
+# new subscription can actually create. Standard_D4s_v5 was neither: a fresh
+# subscription gets zero DSv5 quota, so the first apply failed on quota after
+# building the network.
 run "the_vm_clears_dataikus_memory_floor" {
   command = plan
 
   assert {
-    condition     = azurerm_linux_virtual_machine.dss.size == "Standard_D4s_v5"
-    error_message = "The default VM size should clear Dataiku's 16 GB floor."
+    condition     = azurerm_linux_virtual_machine.dss.size == "Standard_D4ds_v6"
+    error_message = "The default VM size should clear Dataiku's 16 GB floor with a family a new subscription has quota for."
   }
+
+  # Not asserted: that the size is available in the chosen region, or that the
+  # subscription has quota for its family. Neither is visible in a plan, which
+  # is exactly why the old default survived to a real apply.
 }
 
 # ---------------------------------------------------------------------------

@@ -174,8 +174,14 @@ and DSS reports the environment as created anyway. Pass `PYTHON312` to
 `dataiku_code_env`.
 
 It also costs money. DSS drops into a low-memory mode below roughly 16 GB and
-says so in its logs, so the default is `Standard_D4s_v5` on Premium SSD, which
-bills for as long as it exists. Destroy it when you are done.
+says so in its logs, so the default is `Standard_D4ds_v6` on Premium SSD,
+which bills for as long as it exists. Destroy it when you are done.
+
+That default is deliberately not a DSv5 size. A fresh subscription is given
+zero quota for the DSv5 family, so `Standard_D4s_v5` failed on quota part way
+through a first apply while DSv3, DSv4 and the v6 families all had ten vCPUs
+available. Check your own with `az vm list-usage --location <region>` before
+changing it.
 
 ## Licensing DSS
 

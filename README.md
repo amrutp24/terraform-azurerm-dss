@@ -194,43 +194,10 @@ A fresh instance asks whoever opens it first to register Free Edition. Until
 somebody does, it licenses only the `NONE` user profile, which is not enough
 for the `dataiku` provider to create a usable user.
 
-`license_key_vault_secret_id` makes that a one-time job: register once, keep
-the licence in Key Vault, and every VM after that reads it at boot.
-[docs/licensing.md](docs/licensing.md) has the walkthrough, the prerequisites a
-new subscription trips over (resource providers, quota, the data-plane role),
-and why the fetch uses `python3` rather than the `az` CLI.
-`scripts/save-license.sh` does the vault setup in one run.
-
-None of it removes the DSS login page. DSS always asks for credentials, `admin`
-/ `admin` on a fresh install. What it removes is the registration form.
-
-## Licensing DSS
-
-The `dataiku` provider talks to the DSS public REST API.
-
-Whether a given instance serves it depends on the version and the licence, so
-check rather than assume. A stock DSS 15 Community Edition installed by this
-module answered the API with `license_json` unset, and projects, groups, users,
-connections and scenarios were all created through it. An older `dataiku/dss` container, by
-contrast, refused with `DSS API is not available with your Free Edition
-license`.
-
-The check that matters is whether the API answers at all:
-
-```bash
-curl -su "$DATAIKU_API_KEY:" "$(terraform output -raw dss_url)/public/api/admin/general-settings/" -o /dev/null -w '%{http_code}'; echo
-```
-
-`200` means the provider will work. `401` is a bad key. A licence error names
-itself in the body, and then you need a licence with API access.
-
-Pass a licence at install time if you have one, or register the instance
-through its web interface on first visit.
-
-There are two ways to pass one, and they are not equivalent:
+There are two ways to give it a licence and they are not equivalent.
 
 `license_key_vault_secret_id` names a Key Vault secret and the VM reads it
-**itself** at boot, so only the secret's id reaches Terraform state and
+itself at boot, so only the secret's id reaches Terraform state and
 `custom_data`. Prefer this.
 
 ```hcl
@@ -240,28 +207,44 @@ license_key_vault_id        = "/subscriptions/.../resourceGroups/example-rg/prov
 
 Setting the secret id creates a user-assigned managed identity for the VM.
 Setting the vault id as well scopes a `Key Vault Secrets User` assignment to
-that **one secret**, which is the narrowest grant Azure offers. Leave the vault
-id out and the module grants nothing; use the `identity_principal_id` output to
+that one secret, which is the narrowest grant Azure offers. Leave the vault id
+out and the module grants nothing: use the `identity_principal_id` output to
 grant access yourself, which is what you want if the vault still uses access
 policies or lives in another subscription.
 
-How the VM reads it, since it matters when it goes wrong: the identity's token
-comes from the instance metadata service and the secret from the Key Vault REST
-API, fetched with `python3` and the standard library. No `az` CLI, which this
-image does not carry and which would be a sizeable download at boot to make one
-HTTP request. If the fetch fails, DSS installs **unlicensed rather than half
-configured**, the boot log says `warning: the licence command failed`, and
-the reason is in `/tmp/dss-license-fetch.log`. A `403` there means the role
-assignment has not reached the vault yet; reboot and it tries again.
+`license_json` is the one-step alternative, still works, and still wins if you
+set both. It is rendered into the cloud-config, so the licence ends up in
+Terraform state and in the VM's `custom_data`.
 
-`license_json` is the one-step alternative and still works and still wins if
-you set both. It is rendered into the cloud-config, so the licence ends up in
-Terraform state and in the VM's `custom_data`. Prefer the secret.
+`scripts/save-license.sh` does the vault setup in one run, and
+[docs/licensing.md](docs/licensing.md) has the walkthrough plus the
+prerequisites a new subscription trips over: resource providers, vCPU quota,
+and the data-plane role that being Owner does not give you.
 
-The licence itself is portable: its `instanceId` travels inside the signed
-licence rather than being derived from the hardware, so one licence works on a
-VM that did not exist when it was issued. That is what makes storing it viable
-at all.
+How the VM reads it, which matters when it goes wrong: the identity's token
+comes from the instance metadata service and the secret from the Key Vault
+REST API, fetched with `python3` and the standard library. No `az` CLI, which
+this image does not carry. If the fetch fails, DSS installs unlicensed rather
+than half configured, the boot log says `warning: the licence command failed`,
+and the reason is in `/tmp/dss-license-fetch.log`. A `403` there means the
+role assignment has not reached the vault yet; reboot and it tries again.
+
+None of this removes the DSS login page. DSS always asks for credentials,
+`admin` / `admin` on a fresh install. What it removes is the registration
+form.
+
+### Does the API answer at all
+
+Separate question, and worth checking rather than assuming. A stock DSS 15
+installed by this module answers with no licence at all, and projects, groups,
+users, connections and scenarios can all be created through it.
+
+```bash
+curl -su "$DATAIKU_API_KEY:" "$(terraform output -raw dss_url)/public/api/admin/general-settings/" -o /dev/null -w '%{http_code}'; echo
+```
+
+`200` means the provider will work. `401` is a bad key. A licence error names
+itself in the body, and then you need a licence with API access.
 
 ## Security defaults
 

@@ -131,6 +131,11 @@ The other route is SSH: set `ssh_cidr_blocks`, keep the private half of
 either, and null when neither is set, which is the signal that the file exists
 on the host and nothing can reach it.
 
+`scripts/fetch-key.sh` does that for you: it runs the Run Command, waits for the
+key file to exist, writes the key to `.apikey` at mode 600, and checks that it
+authenticates against `/public/api/admin/users/` before exiting. It never
+prints the key. See [docs/licensing.md](docs/licensing.md) for its options.
+
 Or skip it. Set `create_api_key = false` and create a global API key under
 Administration > Security once DSS is up.
 
@@ -182,6 +187,22 @@ zero quota for the DSv5 family, so `Standard_D4s_v5` failed on quota part way
 through a first apply while DSv3, DSv4 and the v6 families all had ten vCPUs
 available. Check your own with `az vm list-usage --location <region>` before
 changing it.
+
+## Licensing
+
+A fresh instance asks whoever opens it first to register Free Edition. Until
+somebody does, it licenses only the `NONE` user profile, which is not enough
+for the `dataiku` provider to create a usable user.
+
+`license_key_vault_secret_id` makes that a one-time job: register once, keep
+the licence in Key Vault, and every VM after that reads it at boot.
+[docs/licensing.md](docs/licensing.md) has the walkthrough, the prerequisites a
+new subscription trips over (resource providers, quota, the data-plane role),
+and why the fetch uses `python3` rather than the `az` CLI.
+`scripts/save-license.sh` does the vault setup in one run.
+
+None of it removes the DSS login page. DSS always asks for credentials, `admin`
+/ `admin` on a fresh install. What it removes is the registration form.
 
 ## Licensing DSS
 

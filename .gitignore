@@ -13,3 +13,8 @@ override.tf.json
 .terraformrc
 terraform.rc
 .DS_Store
+
+# Written by scripts/
+.apikey
+.license.tmp
+license.json
